@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mobile Store Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;900&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: Cairo, sans-serif
+        }
+
+        #apiError {
+            display: none
+        }
+    </style>
+</head>
+
+<body class="bg-slate-50 text-slate-800 min-h-screen flex flex-col">
+
+    <div id="apiError" class="bg-rose-600 text-white text-center p-3 font-bold"></div>
+
+    <div id="customModal" class="fixed inset-0 bg-black/60 z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl text-center">
+            <div id="modalIcon" class="text-5xl mb-4"></div>
+            <h3 id="modalTitle" class="text-xl font-bold mb-2"></h3>
+            <div id="modalMessage" class="text-slate-600 mb-6 text-sm"></div>
+            <div id="modalButtons" class="flex gap-3 justify-center"></div>
+        </div>
+    </div>
+
+    <div id="app" class="flex-1 flex flex-col"></div>
+
+    <script>
+        let currentUser = null, cart = [], ownerTab = 'inventory';
+
+        async function api(path, data = null) {
+            const options = data ? {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            } : {};
+
+            let response;
+            try {
+                response = await fetch(path, options);
+            } catch (e) {
+                showApiError('تعذر الاتصال بالسيرفر. تأكد من رفع الملفات وتشغيل .NET 8 على الاستضافة.');
+                throw e;
+            }
+
+            const text = await response.text();
+            let result;
+
+            try {
+                result = JSON.parse(text);
+            } catch (e) {
+                showApiError('رد السيرفر غير صحيح: ' + text.substring(0, 200));
+                throw e;
+            }
+
+            hideApiError();
+            return result;
+        }
+
+        function showApiError(msg) {
+            const el = document.getElementById('apiError');
+            el.textContent = msg;
+            el.style.display = 'block';
+        }
+        function hideApiError() {
+            document.getElementById('apiError').style.display = 'none';
+        }
+
+        function esc(v) {
+            if (v === null || v === undefined) return '';
+            return String(v)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function modal(title, html, type = 'info', buttons = []) {
+            document.getElementById('modalTitle').textContent = title;
+            document.getElementById('modalMessage').innerHTML = html;
+            document.getElementById('modalIcon').innerHTML =
+                type === 'success' ? '<i class="fa-solid fa-circle-check text-emerald-500"></i>' :
+                    type === 'error' ? '<i class="fa-solid fa-circle-exclamation text-rose-500"></i>' :
+                        '<i class="fa-solid fa-circle-info text-sky-500"></i>';
+
+            const box = document.getElementById('modalButtons');
+            box.innerHTML = '';
+
+            if (!buttons || !buttons.length) {
+                buttons = [{ text: 'حسناً', class: 'bg-emerald-600 text-white px-5 py-2 rounded-xl font-bold' }];
+            }
+
+            buttons.forEach(b => {
+                const el = document.createElement('button');
+                el.className = b.class || 'bg-slate-200 px-5 py-2 rounded-xl font-bold';
+                el.textContent = b.text;
+                el.onclick = () => { closeModal(); if (b.onClick) b.onClick(); };
+                box.appendChild(el);
+            });
+
+            document.getElementById('customModal').classList.remove('hidden');
+        }
+
+        function closeModal() {
+            document.getElementById('customModal').classList.add('hidden');
+        }
+
+        async function loadApp() {
+            try {
+                const res = await api('/api/auth/me');
+                if (res && res.success && res.user) {
+                    currentUser = res.user;
+                    renderApp();
+                } else {
+                    renderLogin();
+                }
+            } catch (e) {
+                renderLogin();
+            }
+        }
+
+        function renderLogin() {
+            document.getElementById('app').innerHTML = `
+<div class="flex-1 flex items-center justify-center p-4 bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900">
+<div class="bg-white rounded-3xl shadow-2xl max-w-md w-full p-8">
+<div class="text-center mb-6">
+<div class="w-16 h-16 bg-emerald-500 rounded-2xl mx-auto flex items-center justify-center text-white text-2xl mb-3">
+<i class="fa-solid fa-mobile-screen-button"></i>
+</div>
+<h1 class="text-2xl font-black">Mobile Store Pro</h1>
+</div>
+
+<form onsubmit="login(event)" class="space-y-4">
+<input id="loginUser" placeholder="اسم المستخدم" class="w-full p-3 border rounded-xl bg-slate-50">
+<input id="loginPass" type="password" placeholder="كلمة المرور" class="w-full p-3 border rounded-xl bg-slate-50">
+<button class="w-full py-3 bg-emerald-600 text-white rounded-xl font-bold">دخول</button>
+</form>
+
+<div class="mt-4 text-xs text-slate-500 text-center">
+المدير الافتراضي: admin / admin123
+</div>
+</div></div>`;
+        }
+
+        async function login(e) {
+            e.preventDefault();
+
+            const username = document.getElementById('loginUser').value.trim();
+            const password = document.getElementById('loginPass').value;
+
+            try {
+                const res = await api('/api/auth/login', { username, password });
+
+                if (res.success) {
+                    currentUser = res.user;
+                    renderApp();
+                } else {
+                    modal('خطأ', esc(res.message || 'بيانات الدخول غير صحيحة'), 'error');
+                }
+            } catch (err) {
+                modal('خطأ', 'تعذر الاتصال بالسيرفر. تأكد من رفع الملفات وتشغيل .NET 8.', 'error');
+            }
+        }
+
+        async function logout() {
+            try { await api('/api/auth/logout', {}); } catch (e) { }
+            currentUser = null;
+            cart = [];
+            renderLogin();
+        }
+
+        function renderApp() {
+            if (!currentUser) { renderLogin(); return; }
+            if (currentUser.role === 'superadmin') { renderAdmin(); return; }
+            renderStore();
+        }
+
+        async function renderAdmin() {
+            try {
+                const res = await api('/api/stores/list');
+                const stores = res.stores || [];
+
+                document.getElementById('app').innerHTML = `
+<div class="flex-1">
+<header class="bg-slate-900 text-white p-4 flex justify-between items-center">
+<h1 class="font-bold">Super Admin</h1>
+<button onclick="logout()" class="bg-rose-600 px-4 py-2 rounded-xl text-sm font-bold">خروج</button>
+</header>
+
+<main class="p-6 max-w-7xl mx-auto">
+<div class="bg-white rounded-2xl border p-6">
+<div class="flex justify-between items-center mb-4">
+<h2 class="text-xl font-bold">المتاجر</h2>
+<button onclick="addStoreModal()" class="bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-bold">إضافة متجر</button>
+</div>
+
+<div class="overflow-x-auto">
+<table class="w-full text-right">
+<thead><tr class="bg-slate-50 border-b">
+<th class="p-3">المتجر</th><th class="p-3">المستخدم</th><th class="p-3">الخطة</th><th class="p-3">ينتهي</th><th class="p-3">إجراءات</th>
+</tr></thead>
+<tbody>
+${stores.map(s => `
+<tr class="border-b">
+<td class="p-3"><b>${esc(s.store_name)}</b><div class="text-xs text-slate-500">${esc(s.owner_name)}</div></td>
+<td class="p-3 font-mono">${esc(s.username)}</td>
+<td class="p-3">${esc(s.plan)}</td>
+<td class="p-3">${esc(s.expiry_date)}</td>
+<td class="p-3">
+<button onclick="editStoreModal(${s.id})" class="bg-indigo-50 text-indigo-600 p-2 rounded-xl"><i class="fa-solid fa-pen"></i></button>
+<button onclick="deleteStore(${s.id})" class="bg-rose-50 text-rose-600 p-2 rounded-xl"><i class="fa-solid fa-trash"></i></button>
+</td>
+</tr>`).join('')}
+</tbody></table>
+</div>
+</div></main></div>`;
+            } catch (e) {
+                document.getElementById('app').innerHTML = '<div class="p-6 text-center text-rose-600 font-bold">تعذر تحميل المتاجر</div>';
+            }
+        }
+
+        function addStoreModal() {
+            modal('إضافة متجر', `
+<div class="space-y-2 text-right">
+<input id="sName" placeholder="اسم المتجر" class="w-full p-2 border rounded-xl bg-slate-50">
+<input id="sOwner" placeholder="اسم المالك" class="w-full p-2 border rounded-xl bg-slate-50">
+<input id="sPhone" placeholder="الهاتف" class="w-full p-2 border rounded-xl bg-slate-50">
+<input id="sUser" placeholder="اسم المستخدم" class="w-full p-2 border rounded-xl bg-slate-50">
+<input id="sPass" type="password" placeholder="كلمة المرور" class="w-full p-2 border rounded-xl bg-slate-50">
+<select id="sPlan" class="w-full p-2 border rounded-xl bg-slate-50">
+<option value="trial">تجريبي</option>
+<option value="monthly">شهري</option>
+<option value="yearly">سنوي</option>
+<option value="unlimited">غير محدود</option>
+</select>
+</div>`, 'info', [
+                { text: 'حفظ', class: 'bg-emerald-600 text-white px-5 py-2 rounded-xl font-bold', onClick: saveStore },
+                { text: 'إلغاء', class: 'bg-slate-200 px-5 py-2 rounded-xl font-bold' }
+            ]);
+        }
+
+        async function saveStore() {
+            try {
+                const res = await api('/api/stores/add', {
+                    store_name: document.getElementById('sName').value,
+                    owner_name: document.getElementById('sOwner').value,
+                    phone: document.getElementById('sPhone').value,
+                    username: document.getElementById('sUser').value,
+                    password: document.getElementById('sPass').value,
+                    plan: document.getElementById('sPlan').value
+                });
+
+                modal(res.success ? 'تم' : 'خطأ', esc(res.message), res.success ? 'success' : 'error');
+                if (res.success) renderAdmin();
+            } catch (e) { }
+        }
+
+        async function editStoreModal(id) {
+            try {
+                const res = await api('/api/stores/list');
+                const s = (res.stores || []).find(x => x.id == id);
+
+                if (!s) { modal('خطأ', 'المتجر غير موجود', 'error'); return; }
+
+                modal('تعديل المتجر', `
+<div class="space-y-2 text-right">
+<input id="eName" value="${esc(s.store_name)}" class="w-full p-2 border rounded-xl bg-slate-50">
+<input id="eOwner" value="${esc(s.owner_name)}" class="w-full p-2 border rounded-xl bg-slate-50">
+<input id="ePhone" value="${esc(s.phone)}" class="w-full p-2 border rounded-xl bg-slate-50">
+<input id="eUser" value="${esc(s.username)}" class="w-full p-2 border rounded-xl bg-slate-50">
+<input id="ePass" type="password" placeholder="كلمة مرور جديدة" class="w-full p-2 border rounded-xl bg-slate-50">
+<select id="ePlan" class="w-full p-2 border rounded-xl bg-slate-50">
+<option value="trial"     ${s.plan === 'trial' ? 'selected' : ''}>تجريبي</option>
+<option value="monthly"   ${s.plan === 'monthly' ? 'selected' : ''}>شهري</option>
+<option value="yearly"    ${s.plan === 'yearly' ? 'selected' : ''}>سنوي</option>
+<option value="unlimited" ${s.plan === 'unlimited' ? 'selected' : ''}>غير محدود</option>
+</select>
+<input type="date" id="eExpiry" value="${esc(s.expiry_date)}" class="w-full p-2 border rounded-xl bg-slate-50">
+<label class="flex items-center gap-2 justify-end text-sm">
+<input type="checkbox" id="eActive" ${s.is_active == 1 ? 'checked' : ''}> نشط
+</label>
+</div>`, 'info', [
+                    { text: 'حفظ', class: 'bg-emerald-600 text-white px-5 py-2 rounded-xl font-bold', onClick: () => saveStoreEdit(id) },
+                    { text: 'إلغاء', class: 'bg-slate-200 px-5 py-2 rounded-xl font-bold' }
+                ]);
+            } catch (e) { }
+        }
+
+        async function saveStoreEdit(id) {
+            try {
+                const res = await api('/api/stores/update', {
+                    store_id: id,
+                    store_name: document.getElementById('eName').value,
+                    owner_name: document.getElementById('eOwner').value,
+                    phone: document.getElementById('ePhone').value,
+                    username: document.getElementById('eUser').value,
+                    password: document.getElementById('ePass').value,
+                    plan: document.getElementById('ePlan').value,
+                    expiry_date: document.getElementById('eExpiry').value,
+                    is_active: document.getElementById('eActive').checked
+                });
+
+                modal(res.success ? 'تم' : 'خطأ', esc(res.message), res.success ? 'success' : 'error');
+                if (res.success) renderAdmin();
+            } catch (e) { }
+        }
+
+        function deleteStore(id) {
+            modal('تأكيد', 'هل تريد حذف المتجر؟', 'error', [
+                {
+                    text: 'حذف', class: 'bg-rose-600 text-white px-5 py-2 rounded-xl font-bold', onClick: async () => {
+                        try { await api('/api/stores/delete', { store_id: id }); renderAdmin(); } catch (e) { }
+                    }
+                },
+                { text: 'إلغاء', class: 'bg-slate-200 px-5 py-2 rounded-xl font-bold' }
+            ]);
+        }
+
+        async function renderStore() {
+            const role = currentUser.role;
+
+            const tabs = role === 'storeowner'
+                ? [['pos', 'نقطة البيع', 'fa-cash-register'], ['inventory', 'المخزون', 'fa-boxes-stacked'], ['invoices', 'الفواتير', 'fa-file-invoice'], ['repairs', 'الصيانة', 'fa-screwdriver-wrench'], ['settings', 'الإعدادات', 'fa-gear'], ['users', 'المستخدمين', 'fa-users-gear']]
+                : role === 'cashier'
+                    ? [['pos', 'نقطة البيع', 'fa-cash-register'], ['invoices', 'الفواتير', 'fa-file-invoice']]
+                    : [['repairs', 'الصيانة', 'fa-screwdriver-wrench']];
+
+            if (!tabs.some(t => t[0] === ownerTab)) ownerTab = tabs[0][0];
+
+            document.getElementById('app').innerHTML = `
+<div class="flex-1">
+<header class="bg-slate-900 text-white p-4">
+<div class="flex justify-between items-center">
+<div>
+<h1 class="font-black">${esc(currentUser.name)}</h1>
+<p class="text-xs text-slate-400">${esc(currentUser.username)}</p>
+</div>
+<button onclick="logout()" class="bg-rose-600 px-4 py-2 rounded-xl text-sm font-bold">خروج</button>
+</div>
+
+<nav class="flex flex-wrap gap-2 justify-center mt-3">
+${tabs.map(t => `
+<button onclick="ownerTab='${t[0]}';renderStore()" class="px-4 py-2 rounded-xl text-sm font-bold ${ownerTab === t[0] ? 'bg-emerald-600' : 'bg-slate-800 text-slate-300'}">
+<i class="fa-solid ${t[2]}"></i> ${t[1]}
+</button>`).join('')}
+</nav>
+</header>
+
+<main class="p-6 max-w-7xl mx-auto">
+<div id="content"></div>
+</main></div>`;
+
+            try {
+                if (ownerTab === 'inventory') await loadProducts();
+                else if (ownerTab === 'pos') await loadPOS();
+                else if (ownerTab === 'invoices') await loadInvoices();
+                else if (ownerTab === 'repairs') await loadRepairs();
+                else if (ownerTab === 'settings') await loadSettings();
+                else if (ownerTab === 'users') await loadStaff();
+            } catch (e) {
+                document.getElementById('content').innerHTML = '<div class="bg-white border rounded-2xl p-6 text-center text-rose-600 font-bold">تعذر تحميل البيانات</div>';
+            }
+        }
+
+        async function loadProducts() {
+            const res = await api('/api/products/list');
+            const products = res.products || [];
+
+            document.getElementById('content').innerHTML = `
+<div class="bg-white rounded-2xl border p-6">
+<div class="flex justify-between items-center mb-4">
+<h2 class="text-xl font-bold">المخزون</h2>
+<button onclick="addProductModal()" class="bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-bold">إضافة منتج</button>
+</div>
+
+<table class="w-full text-right">
+<thead><tr class="bg-slate-50 border-b">
+<th class="p-3">المنتج</th><th class="p-3">التكلفة</th><th class="p-3">السعر</th><th class="p-3">الكمية</th><th class="p-3">IMEI</th><th class="p-3"></th>
+</tr></thead>
+<tbody>
+${products.map(p => `
+<tr class="border-b">
+<td class="p-3"><b>${esc(p.name)}</b></td>
+<td class="p-3">${p.cost}</td>
+<td class="p-3 font-bold text-emerald-600">${p.price}</td>
+<td class="p-3">${p.stock}</td>
+<td class="p-3 text-xs">${esc(p.imei)}</td>
+<td class="p-3"><button onclick="deleteProduct(${p.id})" class="bg-rose-50 text-rose-600 p-2 rounded-xl"><i class="fa-solid fa-trash"></i></button></td>
+</tr>`).join('')}
+</tbody></table></div>`;
+        }
+
+        function addProductModal() {
+            modal('إضافة منتج / منتجات', `
+<div class="space-y-3 text-right">
+<div class="grid grid-cols-2 gap-2">
+<div>
+<label class="block text-xs font-bold mb-1">طريقة الإضافة</label>
+<select id="addMode" onchange="buildRows()" class="w-full p-2 border rounded-xl bg-slate-50">
+<option value="single">منتج واحد</option>
+<option value="multiple">أكثر من منتج</option>
+</select>
+</div>
+<div id="countBox" class="hidden">
+<label class="block text-xs font-bold mb-1">عدد المنتجات</label>
+<input type="number" id="pCount" min="1" max="20" value="2" oninput="buildRows()" class="w-full p-2 border rounded-xl bg-slate-50">
+</div>
+</div>
+<div id="rows"></div>
+</div>`, 'info', [
+                { text: 'حفظ', class: 'bg-emerald-600 text-white px-5 py-2 rounded-xl font-bold', onClick: saveProducts },
+                { text: 'إلغاء', class: 'bg-slate-200 px-5 py-2 rounded-xl font-bold' }
+            ]);
+
+            buildRows();
+        }
+
+        function buildRows() {
+            const multi = document.getElementById('addMode').value === 'multiple';
+            document.getElementById('countBox').classList.toggle('hidden', !multi);
+
+            const n = multi ? Math.max(1, Math.min(20, parseInt(document.getElementById('pCount').value) || 1)) : 1;
+            let html = '';
+
+            for (let i = 0; i < n; i++) {
+                html += `
+<div class="border rounded-2xl p-4 mb-3 bg-slate-50 text-right">
+<h4 class="font-bold text-sm text-emerald-700 mb-2">المنتج رقم ${i + 1}</h4>
+<input id="name_${i}" placeholder="اسم المنتج" class="w-full p-2 border rounded-xl bg-white mb-2">
+<select id="cat_${i}" class="w-full p-2 border rounded-xl bg-white mb-2">
+<option value="هواتف">هواتف</option>
+<option value="اكسسوارات">اكسسوارات</option>
+<option value="أخرى">أخرى</option>
+</select>
+<div class="grid grid-cols-2 gap-2 mb-2">
+<input type="number" id="cost_${i}" placeholder="التكلفة" class="p-2 border rounded-xl bg-white">
+<input type="number" id="price_${i}" placeholder="سعر البيع" class="p-2 border rounded-xl bg-white">
+</div>
+<div class="grid grid-cols-2 gap-2 mb-2">
+<input type="number" id="stock_${i}" value="1" placeholder="الكمية" class="p-2 border rounded-xl bg-white">
+<input id="barcode_${i}" placeholder="الباركود" class="p-2 border rounded-xl bg-white">
+</div>
+<input id="imei_${i}" placeholder="IMEI" class="w-full p-2 border rounded-xl bg-white">
+</div>`;
+            }
+
+            document.getElementById('rows').innerHTML = html;
+        }
+
+        async function saveProducts() {
+            try {
+                const multi = document.getElementById('addMode').value === 'multiple';
+                const n = multi ? Math.max(1, Math.min(20, parseInt(document.getElementById('pCount').value) || 1)) : 1;
+                const products = [];
+
+                for (let i = 0; i < n; i++) {
+                    const name = document.getElementById('name_' + i)?.value.trim() || '';
+                    if (!name) continue;
+
+                    products.push({
+                        name,
+                        category: document.getElementById('cat_' + i)?.value || 'أخرى',
+                        cost: +document.getElementById('cost_' + i)?.value || 0,
+                        price: +document.getElementById('price_' + i)?.value || 0,
+                        stock: +document.getElementById('stock_' + i)?.value || 0,
+                        barcode: document.getElementById('barcode_' + i)?.value || '',
+                        imei: document.getElementById('imei_' + i)?.value || ''
+                    });
+                }
+
+                if (!products.length) {
+                    modal('تنبيه', 'أدخل اسم منتج واحد على الأقل.', 'error');
+                    return;
+                }
+
+                const res = await api('/api/products/add', { products });
+                modal(res.success ? 'تم' : 'خطأ', esc(res.message), res.success ? 'success' : 'error');
+                if (res.success) loadProducts();
+            } catch (e) { }
+        }
+
+        async function deleteProduct(id) {
+            try {
+                await api('/api/products/delete', { id });
+                loadProducts();
+            } catch (e) { }
+        }
+
+        async function loadPOS() {
+            const res = await api('/api/products/list');
+            const products = res.products || [];
+
+            document.getElementById('content').innerHTML = `
+<div class="grid lg:grid-cols-3 gap-4">
+<div class="lg:col-span-2 bg-white rounded-2xl border p-4">
+<h2 class="font-bold mb-3">المنتجات</h2>
+<div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+${products.map(p => `
+<div onclick="addToCart(${p.id},'${esc(p.name)}',${p.price})" class="bg-slate-50 border rounded-xl p-3 cursor-pointer">
+<b class="text-sm">${esc(p.name)}</b>
+<div class="text-emerald-600 font-bold">${p.price}</div>
+<div class="text-xs text-slate-500">متاح: ${p.stock}</div>
+</div>`).join('')}
+</div></div>
+
+<div class="bg-white rounded-2xl border p-4">
+<h2 class="font-bold mb-3">السلة</h2>
+<input id="cName" placeholder="اسم العميل" class="w-full p-2 border rounded-xl bg-slate-50 mb-2">
+<input id="cPhone" placeholder="هاتف العميل" class="w-full p-2 border rounded-xl bg-slate-50 mb-3">
+<div id="cartBox" class="space-y-2 mb-3"></div>
+<button onclick="checkout()" class="w-full py-3 bg-emerald-600 text-white rounded-xl font-bold">إتمام البيع</button>
+</div></div>`;
+
+            renderCart();
+        }
+
+        function addToCart(id, name, price) {
+            const found = cart.find(x => x.id === id);
+            if (found) found.qty++;
+            else cart.push({ id, name, price, qty: 1 });
+            renderCart();
+        }
+
+        function renderCart() {
+            const box = document.getElementById('cartBox');
+            if (!box) return;
+            box.innerHTML = cart.map(i => `
+<div class="flex justify-between bg-slate-50 p-2 rounded-xl text-sm">
+<span>${esc(i.name)} × ${i.qty}</span>
+<span>${i.price * i.qty}</span>
+</div>`).join('') || '<div class="text-center text-slate-400 text-sm">السلة فارغة</div>';
+        }
+
+        async function checkout() {
+            try {
+                const res = await api('/api/invoices/create', {
+                    customer_name: document.getElementById('cName').value,
+                    customer_phone: document.getElementById('cPhone').value,
+                    items: cart
+                });
+
+                modal(res.success ? 'تم' : 'خطأ', esc(res.message), res.success ? 'success' : 'error');
+                if (res.success) { cart = []; loadPOS(); }
+            } catch (e) { }
+        }
+
+        async function loadInvoices() {
+            const res = await api('/api/invoices/list');
+            const invoices = res.invoices || [];
+
+            document.getElementById('content').innerHTML = `
+<div class="bg-white rounded-2xl border p-6">
+<h2 class="text-xl font-bold mb-4">الفواتير</h2>
+<table class="w-full text-right">
+<thead><tr class="bg-slate-50 border-b"><th class="p-3">رقم</th><th class="p-3">العميل</th><th class="p-3">الإجمالي</th><th class="p-3"></th></tr></thead>
+<tbody>
+${invoices.map(i => `
+<tr class="border-b">
+<td class="p-3 font-mono">${esc(i.invoice_no)}</td>
+<td class="p-3">${esc(i.customer_name)}</td>
+<td class="p-3 font-bold">${i.total}</td>
+<td class="p-3"><button onclick="returnInvoice(${i.id})" class="bg-rose-50 text-rose-600 p-2 rounded-xl"><i class="fa-solid fa-rotate-left"></i></button></td>
+</tr>`).join('')}
+</tbody></table></div>`;
+        }
+
+        async function returnInvoice(id) {
+            try {
+                await api('/api/invoices/return', { invoice_id: id });
+                loadInvoices();
+            } catch (e) { }
+        }
+
+        async function loadRepairs() {
+            const res = await api('/api/repairs/list');
+            const repairs = res.repairs || [];
+
+            document.getElementById('content').innerHTML = `
+<div class="bg-white rounded-2xl border p-6">
+<div class="flex justify-between items-center mb-4">
+<h2 class="text-xl font-bold">الصيانة</h2>
+<button onclick="repairModal()" class="bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-bold">إضافة طلب</button>
+</div>
+
+<table class="w-full text-right">
+<thead><tr class="bg-slate-50 border-b"><th class="p-3">العميل</th><th class="p-3">الجهاز</th><th class="p-3">الحالة</th><th class="p-3"></th></tr></thead>
+<tbody>
+${repairs.map(r => `
+<tr class="border-b">
+<td class="p-3">${esc(r.customer_name)}</td>
+<td class="p-3">${esc(r.device)}</td>
+<td class="p-3">${esc(r.status)}</td>
+<td class="p-3"><button onclick="advanceRepair(${r.id})" class="bg-indigo-50 text-indigo-600 p-2 rounded-xl"><i class="fa-solid fa-forward"></i></button></td>
+</tr>`).join('')}
+</tbody></table></div>`;
+        }
+
+        function repairModal() {
+            modal('طلب صيانة', `
+<div class="space-y-2 text-right">
+<input id="rCustomer" placeholder="اسم العميل" class="w-full p-2 border rounded-xl bg-slate-50">
+<input id="rPhone" placeholder="هاتف العميل" class="w-full p-2 border rounded-xl bg-slate-50">
+<input id="rDevice" placeholder="الجهاز" class="w-full p-2 border rounded-xl bg-slate-50">
+<textarea id="rIssue" rows="3" placeholder="المشكلة" class="w-full p-2 border rounded-xl bg-slate-50"></textarea>
+</div>`, 'info', [
+                { text: 'حفظ', class: 'bg-emerald-600 text-white px-5 py-2 rounded-xl font-bold', onClick: saveRepair },
+                { text: 'إلغاء', class: 'bg-slate-200 px-5 py-2 rounded-xl font-bold' }
+            ]);
+        }
+
+        async function saveRepair() {
+            try {
+                const res = await api('/api/repairs/add', {
+                    customer_name: document.getElementById('rCustomer').value,
+                    customer_phone: document.getElementById('rPhone').value,
+                    device: document.getElementById('rDevice').value,
+                    issue: document.getElementById('rIssue').value
+                });
+
+                modal(res.success ? 'تم' : 'خطأ', esc(res.message), res.success ? 'success' : 'error');
+                if (res.success) loadRepairs();
+            } catch (e) { }
+        }
+
+        async function advanceRepair(id) {
+            try {
+                await api('/api/repairs/advance', { id });
+                loadRepairs();
+            } catch (e) { }
+        }
+
+        async function loadSettings() {
+            const res = await api('/api/settings/get');
+            const s = res.store || {};
+
+            document.getElementById('content').innerHTML = `
+<div class="bg-white rounded-2xl border p-6 max-w-xl mx-auto">
+<h2 class="text-xl font-bold mb-4">إعدادات المتجر</h2>
+<div class="space-y-3">
+<input id="setName" value="${esc(s.store_name)}" class="w-full p-3 border rounded-xl bg-slate-50">
+<input id="setPhone" value="${esc(s.phone)}" class="w-full p-3 border rounded-xl bg-slate-50">
+<input id="setAddress" value="${esc(s.address)}" class="w-full p-3 border rounded-xl bg-slate-50">
+<button onclick="saveSettings()" class="w-full py-3 bg-emerald-600 text-white rounded-xl font-bold">حفظ</button>
+</div></div>`;
+        }
+
+        async function saveSettings() {
+            try {
+                const res = await api('/api/settings/save', {
+                    store_name: document.getElementById('setName').value,
+                    phone: document.getElementById('setPhone').value,
+                    address: document.getElementById('setAddress').value
+                });
+                modal(res.success ? 'تم' : 'خطأ', esc(res.message), res.success ? 'success' : 'error');
+            } catch (e) { }
+        }
+
+        async function loadStaff() {
+            const res = await api('/api/staff/list');
+            const staff = res.staff || [];
+
+            document.getElementById('content').innerHTML = `
+<div class="bg-white rounded-2xl border p-6">
+<div class="flex justify-between items-center mb-4">
+<h2 class="text-xl font-bold">المستخدمين</h2>
+<button onclick="staffModal()" class="bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-bold">إضافة مستخدم</button>
+</div>
+
+<table class="w-full text-right">
+<thead><tr class="bg-slate-50 border-b"><th class="p-3">الاسم</th><th class="p-3">المستخدم</th><th class="p-3">الوظيفة</th><th class="p-3">الحالة</th><th class="p-3"></th></tr></thead>
+<tbody>
+${staff.map(s => `
+<tr class="border-b">
+<td class="p-3">${esc(s.name)}</td>
+<td class="p-3 font-mono">${esc(s.username)}</td>
+<td class="p-3">${s.role === 'cashier' ? 'كاشير' : 'فني صيانة'}</td>
+<td class="p-3">${s.is_active == 1 ? 'نشط' : 'موقوف'}</td>
+<td class="p-3">
+<button onclick="toggleStaff(${s.id})" class="bg-indigo-50 text-indigo-600 p-2 rounded-xl"><i class="fa-solid fa-power-off"></i></button>
+<button onclick="resetStaff(${s.id})" class="bg-amber-50 text-amber-600 p-2 rounded-xl"><i class="fa-solid fa-key"></i></button>
+<button onclick="deleteStaff(${s.id})" class="bg-rose-50 text-rose-600 p-2 rounded-xl"><i class="fa-solid fa-trash"></i></button>
+</td>
+</tr>`).join('')}
+</tbody></table></div>`;
+        }
+
+        function staffModal() {
+            modal('إضافة مستخدم', `
+<div class="space-y-2 text-right">
+<input id="stName" placeholder="اسم الموظف" class="w-full p-2 border rounded-xl bg-slate-50">
+<input id="stUser" placeholder="اسم المستخدم" class="w-full p-2 border rounded-xl bg-slate-50">
+<input id="stPass" type="password" placeholder="كلمة المرور" class="w-full p-2 border rounded-xl bg-slate-50">
+<select id="stRole" class="w-full p-2 border rounded-xl bg-slate-50">
+<option value="cashier">كاشير</option>
+<option value="technician">فني صيانة</option>
+</select>
+</div>`, 'info', [
+                { text: 'حفظ', class: 'bg-emerald-600 text-white px-5 py-2 rounded-xl font-bold', onClick: saveStaff },
+                { text: 'إلغاء', class: 'bg-slate-200 px-5 py-2 rounded-xl font-bold' }
+            ]);
+        }
+
+        async function saveStaff() {
+            try {
+                const res = await api('/api/staff/add', {
+                    name: document.getElementById('stName').value,
+                    username: document.getElementById('stUser').value,
+                    password: document.getElementById('stPass').value,
+                    role: document.getElementById('stRole').value
+                });
+
+                modal(res.success ? 'تم' : 'خطأ', esc(res.message), res.success ? 'success' : 'error');
+                if (res.success) loadStaff();
+            } catch (e) { }
+        }
+
+        async function toggleStaff(id) {
+            try { await api('/api/staff/toggle', { id }); loadStaff(); } catch (e) { }
+        }
+
+        async function deleteStaff(id) {
+            try { await api('/api/staff/delete', { id }); loadStaff(); } catch (e) { }
+        }
+
+        function resetStaff(id) {
+            modal('تغيير كلمة المرور', '<input id="newPass" type="password" placeholder="كلمة المرور الجديدة" class="w-full p-2 border rounded-xl bg-slate-50">', 'info', [
+                {
+                    text: 'حفظ', class: 'bg-emerald-600 text-white px-5 py-2 rounded-xl font-bold', onClick: async () => {
+                        try {
+                            const res = await api('/api/staff/reset_password', { id, password: document.getElementById('newPass').value });
+                            modal(res.success ? 'تم' : 'خطأ', esc(res.message), res.success ? 'success' : 'error');
+                            if (res.success) loadStaff();
+                        } catch (e) { }
+                    }
+                },
+                { text: 'إلغاء', class: 'bg-slate-200 px-5 py-2 rounded-xl font-bold' }
+            ]);
+        }
+
+        loadApp();
+    </script>
+</body>
+
+</html>
